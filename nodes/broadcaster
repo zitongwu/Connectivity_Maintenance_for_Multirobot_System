@@ -3,14 +3,7 @@
 Author: Zitong Wu
 Date: May 12, 2020
 
-Assignment:
-    Construct a communication graph and move robots to terminal locations and
-    those intermediate locations that are necessary to maintain connectivity.
-
-Assumption: the number of nodes are equal to the number of robots, 
-with the terminal nodes less than or equal to the number of robots available
-
-This script: implement tf broadcaster for setting up a commmon reference frame
+A static tf broadcaster to broadcast the coordinate frame of each robot according to their initial poses. 
   
 Usage: rosrun pa5 broadcaster
 
