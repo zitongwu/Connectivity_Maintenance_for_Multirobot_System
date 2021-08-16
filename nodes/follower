@@ -1,15 +1,9 @@
 #!/usr/bin/env python
 """
 Author: Zitong Wu
+Date: May 1, 2021
 
-Assignment:
-    Construct a communication graph and move robots to terminal locations and
-    those intermediate locations that are necessary to maintain connectivity.
-
-Assumption: the number of nodes are equal to the number of robots, 
-with the terminal loacations less than or equal to the number of robots available
-
-This script: the ROS node for the followers
+Follower: receives waypoints from the leader and moves to the waypoints
   
 Usage: rosrun pa5 follower
 
