@@ -3,9 +3,13 @@
 Author: Zitong Wu
 Date: May 12, 2020
 
-Assignment:
-    Construct a communication graph and move robots to terminal locations and
-    those intermediate locations that are necessary to maintain connectivity.
+Leader: 
+        - construct communication graph
+        - initiates coordination
+        - waits for terminal messages
+        - computes all waypoints that require robots in place to ensure connectivity
+        - assigns each waypoint to the closest robot so that the total distance traveled by all robots is minimized 
+        - sends goals to corresponding robots
 
 Assumption: the number of nodes are equal to the number of robots, 
 with the terminal nodes less than or equal to the number of robots available
