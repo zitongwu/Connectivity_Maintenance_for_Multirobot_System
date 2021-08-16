@@ -10,10 +10,6 @@ For the demonstration purpose, 1 leader and 7 followers are deployed. The robot 
 
 <br >
 
-# License
-
-<br >
-
 # Nodes
 * `leader`: 
    * initiates coordination
