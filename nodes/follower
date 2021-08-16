@@ -1,0 +1,164 @@
+#!/usr/bin/env python
+"""
+Author: Zitong Wu
+Class: COSC 269, Multirobot Systems, Spring 2021, Dartmouth College
+Date: May 12, 2020
+
+Assignment:
+    Construct a communication graph and move robots to terminal locations and
+    those intermediate locations that are necessary to maintain connectivity.
+
+Assumption: the number of nodes are equal to the number of robots, 
+with the terminal loacations less than or equal to the number of robots available
+
+This script: the ROS node for the followers
+  
+Usage: rosrun pa5 follower
+
+"""
+
+# import of python modules
+import math
+
+# import of relevant libraries
+import tf # package for setting coordinate frames
+import rospy # module for ROS APIs
+import actionlib # package for ROS action, for use of SimpleActionServer
+from turtlebot3_gazebo.srv import Registration # service type for registration
+from turtlebot3_gazebo.msg import TaskAction, TaskResult # action type and message type for action result
+from std_msgs.msg import Bool # message type for init_co
+from geometry_msgs.msg import Twist # message type for cmd_vel
+
+# constants
+DEFAULT_INITIATE_COORDINATION_TOPIC = '/init_co'
+DEFAULT_ACTION_TOPIC = 'task'
+DEFAULT_SERVICE_TOPIC = '/registration'
+DEFAULT_CMD_VEL_TOPIC = 'cmd_vel'
+DEFAULT_TASK_DONE_TOPIC = 'taskdone'
+FREQUENCY = 10 #Hz
+LINEAR_VELOCITY = 0.2 # m/s
+ANGULAR_VELOCITY = math.pi/4 # rad/s
+
+class Follower():
+    def __init__(self, ns, linear_velocity=LINEAR_VELOCITY, angular_velocity=ANGULAR_VELOCITY, frequency=FREQUENCY):
+        # namespace
+        self.ns = ns
+        
+        # state
+        self.state = "stop"
+
+        # subscribe to the init_co topic
+        self.init_coordination_sub = rospy.Subscriber(DEFAULT_INITIATE_COORDINATION_TOPIC, Bool, self.initiate_coordination_callback, queue_size=1)
+        
+        # set up Task action server
+        self._as = actionlib.SimpleActionServer(self.ns + DEFAULT_ACTION_TOPIC , TaskAction, execute_cb=self.execute_cb, auto_start = False)
+        self._taskdone_pub = rospy.Publisher(DEFAULT_TASK_DONE_TOPIC, Bool, queue_size=1)
+        
+        # set up publisher
+        self._cmd_pub = rospy.Publisher(DEFAULT_CMD_VEL_TOPIC, Twist, queue_size=1)
+
+        # other variables
+        self.rotate_duration = None
+        self.rotate_start_time = None
+        self.move_start_time = None
+        self.move_duration = None
+        self.linear_velocity = linear_velocity
+        self.angular_velocity = angular_velocity 
+        self.frequency = FREQUENCY
+
+
+    def initiate_coordination_callback(self, msg):
+        """process init_co message: 
+            call self.registration_client to initiate registration process"""
+        if msg.data == True:
+            self.registration_client() 
+       
+        
+    def registration_client(self):
+        """send registration request and process response"""
+        rospy.wait_for_service(DEFAULT_SERVICE_TOPIC)
+        srv = rospy.ServiceProxy(DEFAULT_SERVICE_TOPIC, Registration)
+        
+        # send service request
+        srv_response = srv(1)
+        
+        # process service response
+        if srv_response.registered == 1:
+            # start the action server
+            self._as.start() 
+     
+        
+    def execute_cb(self, goal):
+        """execute callback that will run whenever a new goal is received"""
+        rospy.loginfo(self.ns + " goal received")
+
+        quaternion = goal.pose.orientation
+        euler = tf.transformations.euler_from_quaternion([quaternion.x, quaternion.y, quaternion.z, quaternion.w])   
+        rotation_angle = euler[2]
+        if rotation_angle < 0:
+            self.angular_velocity = - self.angular_velocity
+
+        # set rotation duration and move duration
+        self.rotate_duration = abs(rotation_angle / self.angular_velocity)
+        self.move_duration = goal.pose.position.x /self.linear_velocity
+
+        # start rotating
+        self.state = "rotate"
+        self.rotate_start_time = rospy.get_rostime()
+
+        # send to the action client the action result that the goal is executed
+        result = TaskResult()
+        result.success = 1        
+        self._as.set_succeeded(result)
+
+    def move(self):
+        """move (assuming the robot has rotated towards the goal direction.
+        After moving to the goal position, publish taskdone message"""
+        if self.move_duration > 0:
+            twist_msg = Twist()
+            twist_msg.linear.x = self.linear_velocity
+            self._cmd_pub.publish(twist_msg)
+            self.move_duration -= 1/float(self.frequency)
+        else:
+            self.stop()
+            self.state = "stop"
+            done_msg = Bool() 
+            done_msg.data = True
+            self._taskdone_pub.publish(done_msg) 
+      
+    def stop(self):
+        """Stop the robot."""
+        twist_msg = Twist()
+        self._cmd_pub.publish(twist_msg) 
+
+    def rotate(self):
+        """
+        Rotate in place based on fixed angular velocity. 
+        After rotation start moving.
+        """
+        if self.rotate_duration > 0:
+            twist_msg = Twist()
+            twist_msg.angular.z = self.angular_velocity
+            self._cmd_pub.publish(twist_msg)
+            self.rotate_duration -= 1/float(self.frequency)
+        else:
+            self.stop()
+            self.state = "move"
+
+              
+
+
+if __name__ == "__main__":
+    rospy.init_node("follower", anonymous=True)
+    rospy.sleep(2)
+    ns = rospy.get_namespace()
+    follower = Follower(ns) 
+    rospy.loginfo(ns + " follower initiated") 
+    rate = rospy.Rate(FREQUENCY)
+    while not rospy.is_shutdown():
+        if follower.state == "rotate":
+            follower.rotate()
+        if follower.state == "move":
+            follower.move()
+        rate.sleep()
+    

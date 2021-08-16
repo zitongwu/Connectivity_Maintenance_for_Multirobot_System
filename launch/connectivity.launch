@@ -1,0 +1,55 @@
+<!-- More information on ROS launch http://wiki.ros.org/roslaunch/XML -->
+
+<launch>
+
+  <arg name="use_sim_time" default="true"/>
+  <param name="use_sim_time" value="$(arg use_sim_time)"/>
+
+  <group ns = "robot_0">
+    <include file="$(find connectivity)/launch/leader.launch">
+      <arg name="robot_name" value= "robot_0"/>
+    </include>
+  </group>
+
+  <group ns = "robot_1">
+    <include file="$(find connectivity)/launch/follower.launch">
+      <arg name="robot_name" value= "robot_1"/>
+    </include>
+  </group>
+
+  <group ns = "robot_2">
+    <include file="$(find connectivity)/launch/follower.launch">
+      <arg name="robot_name" value= "robot_2"/>
+    </include>
+  </group>
+
+  <group ns = "robot_3">
+    <include file="$(find connectivity)/launch/follower.launch">
+      <arg name="robot_name" value= "robot_3"/>
+    </include>
+  </group>
+
+  <group ns = "robot_4">
+    <include file="$(find connectivity)/launch/follower.launch">
+      <arg name="robot_name" value= "robot_4"/>
+    </include>
+  </group>
+
+  <group ns = "robot_5">
+    <include file="$(find connectivity)/launch/follower.launch">
+      <arg name="robot_name" value= "robot_5"/>
+    </include>
+  </group>
+
+  <group ns = "robot_6">
+    <include file="$(find connectivity)/launch/follower.launch">
+      <arg name="robot_name" value= "robot_6"/>
+    </include>
+  </group>
+
+  <group ns = "robot_7">
+    <include file="$(find connectivity)/launch/follower.launch">
+      <arg name="robot_name" value= "robot_7"/>
+    </include>
+  </group>
+</launch>

@@ -1,0 +1,7 @@
+<launch>
+
+  <arg name="robot_name" default="robot_x"/>
+  <node name="broadcaster" pkg="connectivity" type="broadcaster" output="screen"/>
+  <node name="follower" pkg="connectivity" type="follower" output="screen"/>
+
+</launch>

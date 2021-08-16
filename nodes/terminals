@@ -1,0 +1,94 @@
+#!/usr/bin/env python
+"""
+Author: Zitong Wu
+Class: COSC 269, Multirobot Systems, Spring 2021, Dartmouth College
+Date: May 12, 2020
+
+Assignment:
+    Construct a communication graph and move robots to terminal locations and
+    those intermediate locations that are necessary to maintain connectivity.
+
+Assumption: the number of verticess are equal to the number of robots, 
+with the terminal vertices less than or equal to the number of robots available
+
+This script: generate random terminal locations and publishes them as 
+a single Path message under the "/terminals" topic (the number of random terminal
+locations is set to 4 for demonstration purpose)
+  
+Usage: rosrun pa5 terminals
+
+"""
+
+# import of python modules
+import random 
+
+# import of relevant libraries
+import tf # package for setting coordinate frames
+import rospy # module for ROS APIs
+from nav_msgs.msg import Path # message type for an list of terminals
+from geometry_msgs.msg import PoseStamped # message type for each terminal
+
+
+# Constants
+DEFAULT_TERMINALS_TOPIC = '/terminals'
+# Vertices of a communication graph
+VERTICES = [(6, 4), (-2, 2), (2, 2), (-4, 4), (-4, -2), (-2, -6), (4, -4), (0, -2)]
+NUM_TERMINALS = 4
+     
+            
+def compose_terminals_msg(terminals):
+    """Compose path message from calculated terminals"""
+    
+    path_msg = Path()
+    poses = []
+    
+    # compose the PoseStamped message for each terminal 
+    for i in range(len(terminals)):
+        pose = PoseStamped()
+        
+        pose.pose.position.x = terminals[i][0]
+        pose.pose.position.y = terminals[i][1]
+        pose.pose.position.z = 0
+
+        quarternion = tf.transformations.quaternion_from_euler(0, 0, 0)
+        pose.pose.orientation.x = quarternion[0]
+        pose.pose.orientation.y = quarternion[1]
+        pose.pose.orientation.z = quarternion[2]   
+        pose.pose.orientation.w = quarternion[3] 
+        
+        pose.header.stamp = rospy.Time.now()
+        pose.header.frame_id = "world"
+        poses.append(pose)
+        
+    path_msg.header.stamp = rospy.Time.now()
+    path_msg.header.frame_id = "world"
+    path_msg.poses = poses
+    return path_msg
+
+
+if __name__ == "__main__":
+    # initialization of node.
+    rospy.init_node("terminals")
+
+    # Sleep for a few seconds to wait for the registration.
+    rospy.sleep(2)
+    
+    # set up terminals publisher
+    terminals_pub = rospy.Publisher(DEFAULT_TERMINALS_TOPIC, Path, queue_size=1)
+    rospy.sleep(2)
+    
+    # compute terminals, compose path message, and publish
+    random_terminals = []
+    for i in range(NUM_TERMINALS):
+        new_terminal = random.choice(VERTICES)
+        while new_terminal in random_terminals:
+            new_terminal = random.choice(VERTICES)
+        random_terminals.append(new_terminal)
+    terminals_msg = compose_terminals_msg(random_terminals)
+
+    while terminals_pub.get_num_connections() == 0:
+        rospy.loginfo("Waiting for subscriber to connect")
+        rospy.sleep(1)
+    terminals_pub.publish(terminals_msg)
+
+    rospy.loginfo(terminals_msg)

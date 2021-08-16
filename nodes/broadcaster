@@ -1,0 +1,64 @@
+#!/usr/bin/env python  
+"""
+Author: Zitong Wu
+Class: COSC 269, Multirobot Systems, Spring 2021, Dartmouth College
+Date: May 12, 2020
+
+Assignment:
+    Construct a communication graph and move robots to terminal locations and
+    those intermediate locations that are necessary to maintain connectivity.
+
+Assumption: the number of nodes are equal to the number of robots, 
+with the terminal nodes less than or equal to the number of robots available
+
+This script: implement tf broadcaster for setting up a commmon reference frame
+  
+Usage: rosrun pa5 broadcaster
+
+"""
+
+
+import tf2_ros # package that provides StaticTransformBroadcaster 
+import tf # package for setting coordinate frames
+import rospy # module for ROS APIs
+from geometry_msgs.msg import Pose2D # message type for initial poses
+from geometry_msgs.msg import TransformStamped
+
+DEFAULT_INITIAL_POSE_TOPIC = 'initialpose'
+DEFAULT_ODOM_TOPIC = 'odom'
+
+
+def initial_pose_callback(msg):
+        # get namespace from message connection header
+        ns = '/' + msg._connection_header["topic"].split("/")[1] + '/'
+        rospy.loginfo(ns + " initialpose received") 
+
+        broadcaster = tf2_ros.StaticTransformBroadcaster() # set up static broadcaster
+        static_transformStamped = TransformStamped() # create transform message to be broadcasted
+
+        static_transformStamped.header.stamp = rospy.Time.now()          # time stamp
+        static_transformStamped.header.frame_id = "world"                # parent frame
+        static_transformStamped.child_frame_id = ns + DEFAULT_ODOM_TOPIC # child frame
+        
+        static_transformStamped.transform.translation.x = msg.x
+        static_transformStamped.transform.translation.y = msg.y
+        static_transformStamped.transform.translation.z = 0
+
+        quarternion = tf.transformations.quaternion_from_euler(0, 0, msg.theta)
+        static_transformStamped.transform.rotation.x = quarternion[0]
+        static_transformStamped.transform.rotation.y = quarternion[1]
+        static_transformStamped.transform.rotation.z = quarternion[2]
+        static_transformStamped.transform.rotation.w = quarternion[3]
+        
+        broadcaster.sendTransform(static_transformStamped) # send transform message
+    
+    
+if __name__ == "__main__":
+    rospy.init_node('tf_broadcaster', anonymous = True)  
+    rospy.sleep(2)
+    ns = rospy.get_namespace()
+    
+    # subscribe to initialpose topic
+    rospy.Subscriber(ns + DEFAULT_INITIAL_POSE_TOPIC, Pose2D, initial_pose_callback, queue_size=1)    
+    
+    rospy.spin()

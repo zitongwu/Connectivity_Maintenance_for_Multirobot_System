@@ -1,0 +1,369 @@
+#!/usr/bin/env python
+"""
+Author: Zitong Wu
+Class: COSC 269, Multirobot Systems, Spring 2021, Dartmouth College
+Date: May 12, 2020
+
+Assignment:
+    Construct a communication graph and move robots to terminal locations and
+    those intermediate locations that are necessary to maintain connectivity.
+
+Assumption: the number of nodes are equal to the number of robots, 
+with the terminal nodes less than or equal to the number of robots available
+
+This script: the ROS node for the leader
+  
+Usage: rosrun pa5 leader
+
+"""
+
+# import of python modules
+import numpy as np
+import math 
+import networkx as nx
+from networkx.algorithms.approximation.steinertree import steiner_tree
+
+# import relevant libraries
+import tf # package for setting coordinate frames
+import rospy # module for ROS APIs
+import actionlib # package for ROS action, for use of SimpleActionServer
+
+from turtlebot3_gazebo.srv import Registration, RegistrationResponse # service type for registration, message type for service responce
+from turtlebot3_gazebo.msg import TaskAction, TaskGoal # action type and message type for action goal
+from nav_msgs.msg import Path # message type for an list of waypoints
+from std_msgs.msg import Bool # message type for /init_co
+from geometry_msgs.msg import Pose # message type for goal
+from geometry_msgs.msg import Twist # message type for cmd_vel
+
+
+# Constants
+DEFAULT_TERMINALS_TOPIC = '/terminals'
+DEFAULT_INITIATE_COORDINATION_TOPIC = '/init_co'
+DEFAULT_ACTION_TOPIC = 'task'
+DEFAULT_TASK_DONE_TOPIC = 'taskdone'
+DEFAULT_CMD_VEL_TOPIC = 'cmd_vel'
+
+LINEAR_VELOCITY = 0.2 # m/s
+ANGULAR_VELOCITY = math.pi/4 # rad/s
+VERTICES = [(6, 4), (-2, 2), (2, 2), (-4, 4), (-4, -2), (-2, -6), (4, -4), (0, -2)] # nodes in the communication graph
+MIN_D = 2 * math.sqrt(5) # minimum distance required to add an edge between two nodes
+FREQUENCY = 10 #Hz
+
+class Leader():
+    def __init__(self, ns, linear_velocity=LINEAR_VELOCITY, angular_velocity=ANGULAR_VELOCITY, frequency = FREQUENCY):
+
+        # total number of nodes/robots
+        self.num = len(VERTICES)
+
+        # leader's namespace
+        self.ns = ns
+
+        # namespace prefix 
+        self.nsprefix = ns.split('_')[0]
+
+        # all robots' namespaces
+        self.nss = []
+        for i in range(self.num):
+            self.nss.append(self.nsprefix+ '_' + str(i) + '/')
+        
+        # all robots' poses as a dictionary, key is robot's namespace, value is robot's [x, y, yaw]
+        self.poses = {}
+        
+        # waypoints, a list of (x, y) coordinates 
+        self.waypoints = []
+
+        # ternminals, a list of (x, y) coordinates 
+        self.terminals = []
+
+        # communication graph
+        self.G = self.build_graph()
+
+        # state
+        self.state = "wait"
+
+        # number of task executed will be decremented once a task is sent and incremented once a task is done
+        self.taskexecuted = self.num 
+
+        # subscribe to terminals topic
+        self._terminals_sub = rospy.Subscriber(DEFAULT_TERMINALS_TOPIC, Path, self._terminals_callback, queue_size=1)
+
+        # subscribe to taskdone topic
+        self._taskdone_subs = []
+        for ns in self.nss:
+            if ns != self.ns:
+                self._taskdone_subs.append(rospy.Subscriber(ns + DEFAULT_TASK_DONE_TOPIC, Bool, self._taskdone_callback, queue_size=1))
+
+        # set up publisher for initiate coodiantion messages
+        self._initiate_coordination_pub = rospy.Publisher(DEFAULT_INITIATE_COORDINATION_TOPIC, Bool, queue_size=1) 
+        self._cmd_pub = rospy.Publisher(DEFAULT_CMD_VEL_TOPIC, Twist, queue_size=1)
+
+        # set up registration service
+        self._registration_srv = rospy.Service('/registration', Registration, self._process_request)
+        
+        # set up tf listener
+        self._tf_listener = tf.TransformListener()
+
+        # set up task action server
+        self._send_goal_acs = {}
+        for ns in self.nss:
+            if ns != self.ns:
+                self._send_goal_acs[ns] = actionlib.SimpleActionClient(ns + DEFAULT_ACTION_TOPIC , TaskAction)  
+   
+        # other variables
+        self.linear_velocity = linear_velocity
+        self.angular_velocity = angular_velocity
+        self.frequency = frequency
+
+    def _taskdone_callback(self, msg):
+        """process taskdone message"""
+        self.taskexecuted += 1
+
+        # when actions are done by all servers, clear waypoints and terminals and wait for new terminals message
+        if self.taskexecuted == self.num:
+            self.terminals = []
+            self.waypoints = []
+            self.state = "wait"
+
+    def action_clients(self):
+        """get and send goal to each action server
+        decrement self.taskexecuted once a task is sent"""
+        # create the Task action client for each Task action server      
+        # waits until each action server has started up           
+        for ns in self._send_goal_acs:
+            self._send_goal_acs[ns].wait_for_server()
+   
+        # calculates the transformations that need to be performed by each action server, expressed as poses
+        allocations = self.allocate_waypoints()
+        # creates and sends the goal to each action server
+        for ns in allocations:
+            if ns != self.ns:
+                goal = TaskGoal()
+                goal.pose = allocations[ns]
+                self._send_goal_acs[ns].send_goal(goal, done_cb=self.callback_done)
+                self.taskexecuted -= 1
+
+        # perform transformation according to the goal sent to the leader    
+        if self.ns in allocations:
+            self.do_transformation(allocations[self.ns])
+            self.taskexecuted -= 1
+  
+
+    def callback_done(self, state, result):
+        """callback function for self.action_client.send_goal"""
+        if result.success != 1:
+            rospy.logerr("Task not completed")
+
+    def _listener(self):
+        """tf listener: get the latest pose of each robot relative to the world frame"""
+        for i in range(len(self.nss)):
+            trans, quaternion = self._tf_listener.lookupTransform('world', self.nss[i][1:] + 'base_link', rospy.Time(0))
+            euler = tf.transformations.euler_from_quaternion([quaternion[0], quaternion[1], quaternion[2], quaternion[3]])
+            self.poses[self.nss[i]] = trans[:2] + [euler[2]]
+        
+    
+    def _process_request(self, request):
+        """process registration request"""
+        if request.onezero == 1:
+            return RegistrationResponse(1)
+        else:
+            return RegistrationResponse(0)
+  
+    
+    def allocate_waypoints(self):
+        """returns a dictionary of poses that will guide the transformation of each obot"""
+        # get the latest poses of all robots
+        self._listener()
+        
+        # key: namespace, value: pose
+        allocations = {}
+        
+        # list of assigned namespaces
+        assignednss = []
+        
+        #list of assigned waypoint indices
+        assignedwaypoints = []
+        
+        # assign a waypoint to a robot based on their distance 
+        for i in range(len(self.waypoints)):
+            min_dist_ns, min_dist_waypoint = self.min_distance_pair(assignednss, assignedwaypoints)
+            assignednss.append(min_dist_ns)
+            assignedwaypoints.append(min_dist_waypoint)
+            pose = self.calculate_transformation(self.poses[min_dist_ns], self.waypoints[min_dist_waypoint])
+            allocations[min_dist_ns] = pose
+        return allocations
+    
+    def min_distance_pair(self, assignednss, assignedwaypoints):
+        """helper function for self.allocate_waypoints
+        calculate the pair of robot and waypoint that have the minimum distance to each other,
+        excluding assigned robots and waypoints
+        
+        Args: 
+            assignednss, list of assigned namespaces
+            assignedwaypoints, list of assigned waypoint indices
+        Returns: robot's namespace and waypoint index """
+        min_dist = float("inf")
+        min_dist_ns = None
+        min_dist_waypoint = None
+        for i in range(len(self.waypoints)):
+            if i not in assignedwaypoints:
+                for ns in self.poses:
+                    if ns not in assignednss:
+                        dist = np.linalg.norm(abs(np.array(self.waypoints[i]) - np.array(self.poses[ns][:2])))
+                        # print(ns, self.poses[ns][:2], self.waypoints[i], dist)
+                        if (dist < min_dist) :
+                            min_dist = dist
+                            min_dist_ns = ns
+                            min_dist_waypoint = i
+        rospy.loginfo(min_dist_ns + "is assigned to" + str(self.waypoints[min_dist_waypoint]))
+        return min_dist_ns, min_dist_waypoint
+    
+                    
+    def calculate_transformation(self, start, end):
+        """calculate the transformation from starting position to ending position
+        
+        Returns: transformation represented as a Pose message, in which orientation
+        guides the rotation, and position.x tells the euclidean distance to travel 
+        after the rotation"""
+        
+        dist_x = end[0] - start[0]
+        dist_y = end[1] - start[1]
+        dist = math.sqrt(dist_x**2 + dist_y**2)
+        
+        new_angle = math.atan2(dist_y, dist_x)
+        turn_angle = new_angle - start[2]
+        # convert to minimal turn angle
+        if abs(turn_angle) > math.pi:
+            if turn_angle > 0:
+                turn_angle =  turn_angle - 2 * math.pi
+            if turn_angle < 0:
+                turn_angle =  turn_angle + 2 * math.pi
+                
+        # create pose message        
+        pose = Pose()
+        pose.position.x, pose.position.y, pose.position.z = dist, 0, 0
+        quaternion = tf.transformations.quaternion_from_euler(0, 0, turn_angle)
+        pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = quaternion[0], quaternion[1], quaternion[2], quaternion[3]
+        return pose
+        
+    def _terminals_callback(self, msg):
+        """extract terminals from the received Path message and
+        compute all waypoints that require robots to ensure connection"""
+        for posestamped in msg.posesŽ
+            self.terminals.append((posestamped.pose.position.x, posestamped.pose.position.y))
+        rospy.loginfo("terminals received: " + str(self.terminals))
+
+        self.waypoints = list(steiner_tree(self.G, self.terminals, weight = 'distance'))
+        rospy.loginfo("waypoints: " + str(self.waypoints))
+            
+     
+    def initiate_coordination(self):
+        """initiate coordination by sending /init_co messages"""
+        # create and publish init_co message
+        if self.terminals:
+            initiation_msg = Bool() 
+            initiation_msg.data = True
+            self._initiate_coordination_pub.publish(initiation_msg)
+            self.state = "action"
+    
+    
+    def do_transformation(self, goal):
+        """"transform the leader according to the goal"""
+        quaternion = goal.orientation
+        euler = tf.transformations.euler_from_quaternion([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
+        rotation_angle = euler[2]
+        if rotation_angle < 0:
+            self.angular_velocity = - self.angular_velocity   
+
+        # compute rotation durationand move duration
+        self.rotate_duration = abs(rotation_angle / self.angular_velocity)
+        self.move_duration = goal.position.x /self.linear_velocity
+
+        # start rotating
+        self.state = "rotate"
+
+
+    def distance(self, pos1, pos2):
+        """return the distance between two positions"""    
+        squared_distance = (pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2
+        return math.sqrt(squared_distance)      
+
+
+    def build_graph(self):
+        """build the communication graph given the vertices and the minimum
+        distance required to add an edge between two nodes"""
+        G = nx.Graph()
+        for i in range(len(VERTICES)):
+            for j in range(i+1, len(VERTICES)):
+                d = self.distance(VERTICES[i], VERTICES[j])
+                if d <= MIN_D:         
+                    G.add_edge(VERTICES[i], VERTICES[j], distance = d)
+        return G
+
+    def stop(self):
+        """Stop the robot."""
+        twist_msg = Twist()
+        self._cmd_pub.publish(twist_msg) 
+
+    def rotate(self):
+        if self.rotate_duration > 0:
+            twist_msg = Twist()
+            twist_msg.angular.z = self.angular_velocity
+            self._cmd_pub.publish(twist_msg)
+            self.rotate_duration -= 1/float(self.frequency)
+        else:
+            self.stop()
+            self.state = "move"
+
+    def move(self):
+        if self.move_duration > 0:
+            twist_msg = Twist()
+            twist_msg.linear.x = self.linear_velocity
+            self._cmd_pub.publish(twist_msg)
+            self.move_duration -= 1/float(self.frequency)
+        else:
+            self.stop()
+            self.state = "stop"
+            self.taskexecuted += 1
+
+def main():
+    """Main function."""
+    
+    # initialization of node
+    rospy.init_node("leader")
+
+    rospy.sleep(2)
+ 
+    # get this robot's namespace
+    ns = rospy.get_namespace()
+
+    # initialization of the class for the leader
+    leader = Leader(ns)
+    rospy.loginfo(ns + "leader initiated")
+    
+    # if interrupted, send a stop command.
+    rospy.on_shutdown(leader.stop)
+    
+    rate = rospy.Rate(FREQUENCY)
+    while not rospy.is_shutdown():
+
+        try:
+            if leader.state == "rotate":
+                leader.rotate()
+            if leader.state == "move":
+                leader.move()    
+            if leader.state == "wait":
+                print("waiting for new terminals")
+                leader.state = "coordination"
+            if leader.state == "coordination" : 
+                leader.initiate_coordination()
+            if leader.state == "action":
+                leader.action_clients()
+
+        except rospy.ROSInterruptException:
+            rospy.logerr("ROS node interrupted.")
+
+        rate.sleep()
+    
+if __name__ == "__main__":
+    """Run the main function."""
+    main()
